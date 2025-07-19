@@ -15,10 +15,16 @@ This module requires Python 3 and the following dependencies:
 - `rosbag` (ROS Python API)
 - `numpy`
 
+
 Install dependencies with pip (if available on PyPI):
 ```bash
 pip install numpy
 # rosbag is part of ROS and must be installed via your ROS distribution
+```
+
+To install this package in editable (development) mode, run from the root of this repository:
+```bash
+pip install -e .
 ```
 
 ## Usage
