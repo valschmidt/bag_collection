@@ -1,0 +1,3 @@
+numpy
+pandas
+# rosbag is not available on PyPI; install via your ROS distribution
