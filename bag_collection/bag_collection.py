@@ -7,6 +7,7 @@ import numpy as np
 import datetime
 
 class bag_collection():
+    '''A class to manage a collection of bag files.'''
     def __init__(self,directory):
 
         self.directory = directory
