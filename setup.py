@@ -21,9 +21,9 @@ setup(
         "Operating System :: OS Independent",
         "Programming Language :: Python",
     ],
-    entry_points={
-        'console_scripts': ['bag_collection.py=bag_collection.bag_collection:main']
-    },
+    #entry_points={
+    #    'console_scripts': ['bag_collection.py=bag_collection.bag_collection:main']
+    #},
     keywords = "ROS, bag",
     author = "Val Schmidt",
     author_email="vschmidt@ccom.unh.edu"
