@@ -52,11 +52,11 @@ class bag_collection():
         toskip=[]
         for baginfo in self.bagfiles:
             dt = datetime.datetime.now()
-            b = rosbag.Bag(baginfo['path'])
             try:
+                b = rosbag.Bag(baginfo['path'])
                 baginfo.update({'start_time': b.get_start_time()})
                 baginfo.update({'end_time': b.get_end_time()})
-            except rosbag.ROSBagException:
+            except (rosbag.ROSBagException, rosbag.ROSBagUnindexedException):
                 print("Error. Skipping %s" % baginfo["path"])
                 toskip.append(z)
             print(baginfo)
