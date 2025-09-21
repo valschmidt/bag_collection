@@ -5,6 +5,7 @@ import rosbag
 import re
 import numpy as np
 import datetime
+import pickle
 
 class bag_collection():
     '''A class to manage a collection of bag files.'''
@@ -23,6 +24,8 @@ class bag_collection():
             for file in files:
                 if file.endswith(extension):
                     info = {'path': os.path.join(root, file)}
+                    info.update({'size': os.path.getsize(info['path'])})
+                    info.update({'mtime': os.path.getmtime(info['path'])})
                     self.bagfiles.append(info)
                     # yield os.path.join(root, file)
 
@@ -35,7 +38,7 @@ class bag_collection():
             print("\t%s" % f['path'])
 
 
-    def index_collection(self):
+    def index_collection(self, force_reindex=False,pickle_file='bag_collection.pkl'):
         '''Create an index of the collection
         
         Currently this gets a list of all possible topics and message types.
@@ -43,14 +46,34 @@ class bag_collection():
         times of each file or what messages they contain. TODO
 
         '''
+        if not force_reindex and os.path.exists(pickle_file):
+            print(f"Loading index from {pickle_file}...")
+            with open(pickle_file, 'rb') as f:
+                data = pickle.load(f)
+                # self.bagfiles = data['bagfiles']
+                prev_bagfiles = data['bagfiles']
+                prev_paths = [bf['path'] for bf in prev_bagfiles]
+                self.topics = data['topics']
+                self.msg_types = data['msg_types']
+            return
+
         print("Indexing collection...")
         self.msg_types = set()
         self.topics = set()
+        prev_paths = []
+
         if len(self.bagfiles) == 0:
             self.find_bag_files(path=self.directory)
+
         z = 0
         toskip=[]
         for baginfo in self.bagfiles:
+
+            # skip files that haven't changed since last index
+            if baginfo['path'] in prev_paths and baginfo['size'] == prev_bagfiles(baginfo['path'])['size']:
+                z+=1
+                continue
+
             dt = datetime.datetime.now()
             try:
                 b = rosbag.Bag(baginfo['path'])
@@ -62,7 +85,7 @@ class bag_collection():
             print(baginfo)
             z+=1
             print("%d, %f" % (z,(datetime.datetime.now()-dt).total_seconds()) )
-        # remote files that don't records
+
         for i in sorted(toskip, reverse=True):
             del self.bagfiles[i]
             #tt = b.get_type_and_topic_info()
@@ -71,7 +94,34 @@ class bag_collection():
             #z = z + 1
             #if z % np.floor(len(self.bagfiles)/10) == 0:
             #    print("%0.1f percent complete..." % z/len(self.bagfiles)*100)
-    
+        
+        # Save index to pickle
+        with open(pickle_file, 'wb') as f:
+            pickle.dump({
+                'bagfiles': self.bagfiles,
+                'topics': self.topics,
+                'msg_types': self.msg_types
+            }, f)
+        print(f"Index saved to {pickle_file}.")
+
+    def print_index(self):
+        '''Print a summary of the index.'''
+        if len(self.bagfiles) == 0:
+            self.find_bag_files(path=self.directory)
+        if len(self.topics) == 0:
+            self.index_collection()
+
+        print("Bag files in collection:")
+        for bf in self.bagfiles:
+            print("\t%s, size: %d, start: %f, end: %f, mtime: %f" % 
+                  (bf['path'],bf['size'],bf.get('start_time',0),bf.get('end_time',0),bf['mtime']))
+        print("Topics in collection:")
+        for t in self.topics:
+            print("\t%s" % t)
+        print("Message types in collection:")
+        for mt in self.msg_types:
+            print("\t%s" % mt)
+
     def print_topic_sample(self,regexp=None):
         '''A method to print only topics from first 10 files.
         
