@@ -137,7 +137,7 @@ class bag_collection():
             self.msg_types = self.msg_types.union(tt.msg_types.keys())
             self.topics = self.topics.union(tt.topics.keys())
             z = z + 1
-            if z > 1:
+            if z > 10:
                 break
 
         self.print_topics(regexp=regexp)
@@ -180,9 +180,9 @@ class bag_collection():
                        float(message.header.stamp.nsecs/1e9))
             values.append(eval('message.' + field))
     
-        return dts,values
+        return dts, values
     
-    def get_field(self, topic=None, field=None):
+    def get_field(self, topic=None, field=None, start_time=None, end_time=None):
         '''A method to get all occurances of a field in the collection'''
         timestamp = []
         values = []
@@ -190,12 +190,30 @@ class bag_collection():
             self.find_bag_files(path=self.directory)
         z = 0
         for baginfo in self.bagfiles:
+            if start_time is not None and baginfo.get('end_time',0) < start_time:
+                continue
+            if end_time is not None and baginfo.get('start_time',0) > end_time:
+                continue
+            print("Processing %s." % baginfo["path"])
             t, f = self.get_field_from_bag(filename=baginfo['path'],topic=topic,field=field)
             timestamp.extend(t)
             values.extend(f)
             z = z + 1
             #if z > 3:
             #    break
+
+            timestamp = np.array(timestamp)
+            values = np.array(values)
+            if start_time is not None:
+                mask = timestamp >= start_time
+                timestamp = timestamp[mask]
+                values = values[mask]
+            if end_time is not None:
+                mask = timestamp <= end_time
+                timestamp = timestamp[mask]
+                values = values[mask]
+            timestamp = timestamp.tolist()
+            values = values.tolist()
 
         return timestamp,values
 
@@ -207,7 +225,7 @@ class bag_collection():
 
         for baginfo in self.bagfiles:
             b = rosbag.Bag(baginfo['path'])
-            foundTopoic = False
+            foundTopic = False
             for bagtopic, msg, t in b.read_messages():
                 if bagtopic == topic:
                     print(msg._full_text)
