@@ -79,7 +79,7 @@ class bag_collection():
                 b = rosbag.Bag(baginfo['path'])
                 baginfo.update({'start_time': b.get_start_time()})
                 baginfo.update({'end_time': b.get_end_time()})
-            except (rosbag.ROSBagException, rosbag.ROSBagUnindexedException):
+            except (rosbag.ROSBagException, rosbag.ROSBagUnindexedException, ValueError):
                 print("Error. Skipping %s" % baginfo["path"])
                 toskip.append(z)
             print(baginfo)
@@ -184,15 +184,28 @@ class bag_collection():
     
     def get_field(self, topic=None, field=None, start_time=None, end_time=None):
         '''A method to get all occurances of a field in the collection'''
+
+        # Convert string times to UNIX timestamps if provided
+        def to_unix(ts):
+            if ts is None:
+                return None
+            if isinstance(ts, (float, int)):
+                return float(ts)
+            dt = datetime.datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+            return dt.timestamp()
+
+        start_ts = to_unix(start_time)
+        end_ts = to_unix(end_time)
+
         timestamp = []
         values = []
         if len(self.bagfiles) == 0:
             self.find_bag_files(path=self.directory)
         z = 0
         for baginfo in self.bagfiles:
-            if start_time is not None and baginfo.get('end_time',0) < start_time:
+            if start_ts is not None and baginfo.get('end_time',0) < start_ts:
                 continue
-            if end_time is not None and baginfo.get('start_time',0) > end_time:
+            if end_ts is not None and baginfo.get('start_time',0) > end_ts:
                 continue
             print("Processing %s." % baginfo["path"])
             t, f = self.get_field_from_bag(filename=baginfo['path'],topic=topic,field=field)
@@ -204,12 +217,12 @@ class bag_collection():
 
             timestamp = np.array(timestamp)
             values = np.array(values)
-            if start_time is not None:
-                mask = timestamp >= start_time
+            if start_ts is not None:
+                mask = timestamp >= start_ts
                 timestamp = timestamp[mask]
                 values = values[mask]
-            if end_time is not None:
-                mask = timestamp <= end_time
+            if end_ts is not None:
+                mask = timestamp <= end_ts
                 timestamp = timestamp[mask]
                 values = values[mask]
             timestamp = timestamp.tolist()
