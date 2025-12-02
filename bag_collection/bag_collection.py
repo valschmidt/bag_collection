@@ -79,6 +79,13 @@ class bag_collection():
                 b = rosbag.Bag(baginfo['path'])
                 baginfo.update({'start_time': b.get_start_time()})
                 baginfo.update({'end_time': b.get_end_time()})
+                tt = b.get_type_and_topic_info()
+                self.msg_types = self.msg_types.union(tt.msg_types.keys())
+                self.topics = self.topics.union(tt.topics.keys())
+                baginfo.update({'topics': list(tt.topics.keys())})
+                baginfo.update({'msg_types': list(tt.msg_types.keys())})
+                b.close()
+
             except (rosbag.ROSBagException, rosbag.ROSBagUnindexedException, ValueError):
                 print("Error. Skipping %s" % baginfo["path"])
                 toskip.append(z)
@@ -237,6 +244,9 @@ class bag_collection():
             self.find_bag_files(self.directory)
 
         for baginfo in self.bagfiles:
+            if topic not in baginfo.get('topics',[]):
+                continue
+            print("Processing %s." % baginfo["path"])
             b = rosbag.Bag(baginfo['path'])
             foundTopic = False
             for bagtopic, msg, t in b.read_messages():
@@ -246,5 +256,6 @@ class bag_collection():
                     break
             if foundTopic:
                 break
+
 
 
