@@ -1,4 +1,9 @@
-# A python module for reading data from a collection of bag files.
+# A python module for reading data from a collection of ROS1 bag files.
+#
+# Val Schmidt
+# Center for Coastal and Ocean Mapping
+# University of New Hampshire
+# Copyright 2025
 
 import os
 import rosbag
@@ -16,7 +21,8 @@ class bag_collection():
         self.file_index = None
         self.topics = set()
         self.msg_types = set()
-
+        self.msg_defs = dict()
+        
     def find_bag_files(self,path, extension='.bag'):
         """Recursively finds all files with the given extension in the specified directory."""
         
@@ -41,9 +47,18 @@ class bag_collection():
     def index_collection(self, force_reindex=False,pickle_file='bag_collection.pkl'):
         '''Create an index of the collection
         
-        Currently this gets a list of all possible topics and message types.
-        It doesn't really index the files in the sense of knowing the start/stop
-        times of each file or what messages they contain. TODO
+        The index consists of a list of baginfo dictionaries, one per bag file,
+        as well as a set of all topics and message types in the collection.
+
+        Each baginfo dictionary contains:
+            'path' : full path to bag file
+            'size' : size of bag file in bytes
+            'mtime': modification time of bag file (UNIX timestamp)
+            'start_time': start time of bag file (UNIX timestamp)
+            'end_time': end time of bag file (UNIX timestamp)
+            'topics': list of topics in bag file
+            'msg_types': list of message types in bag file
+            'msg_defs': dictionary of message definitions for message types in the collection
 
         '''
         if not force_reindex and os.path.exists(pickle_file):
@@ -55,6 +70,7 @@ class bag_collection():
                 prev_paths = [bf['path'] for bf in prev_bagfiles]
                 self.topics = data['topics']
                 self.msg_types = data['msg_types']
+                self.msg_defs = data['msg_defs']
             return
 
         print("Indexing collection...")
@@ -77,13 +93,21 @@ class bag_collection():
             dt = datetime.datetime.now()
             try:
                 b = rosbag.Bag(baginfo['path'])
+                # Capture the start and end time of the bag file.
                 baginfo.update({'start_time': b.get_start_time()})
                 baginfo.update({'end_time': b.get_end_time()})
+                # Get topics and message types. 
+                # These are stored as a global set for the collection, and also
+                # in the baginfo dictionary for each bag file.
                 tt = b.get_type_and_topic_info()
                 self.msg_types = self.msg_types.union(tt.msg_types.keys())
                 self.topics = self.topics.union(tt.topics.keys())
                 baginfo.update({'topics': list(tt.topics.keys())})
                 baginfo.update({'msg_types': list(tt.msg_types.keys())})
+                # Get message definitions for the global set of message types.
+                for k,v in tt.msg_types.items():
+                    if k not in self.msg_defs:
+                        self.msg_defs[k] = self.get_message_definition(v)
                 b.close()
 
             except (rosbag.ROSBagException, rosbag.ROSBagUnindexedException, ValueError):
@@ -108,6 +132,7 @@ class bag_collection():
                 'bagfiles': self.bagfiles,
                 'topics': self.topics,
                 'msg_types': self.msg_types
+                'msg_defs': self.msg_defs
             }, f)
         print(f"Index saved to {pickle_file}.")
 
@@ -128,6 +153,10 @@ class bag_collection():
         print("Message types in collection:")
         for mt in self.msg_types:
             print("\t%s" % mt)
+        print("Message definitions in collection:")
+        for k,v in self.msg_defs.items():
+            print(f"Message type: {k}")
+            print(v)
 
     def print_topic_sample(self,regexp=None):
         '''A method to print only topics from first 10 files.
@@ -171,6 +200,7 @@ class bag_collection():
 
     def get_fields_by_topic(self,topic=None):
         '''A method to show what fields are available in a message.'''
+
         pass
 
     def get_field_from_bag(self,filename=None,topic = None,field = None):
@@ -237,8 +267,8 @@ class bag_collection():
 
         return timestamp,values
 
-    def print_message_def(self,topic=None):
-        '''A method to print the message definition for a topic.'''
+    def get_message_definition(self,topic=None):
+        '''A method to get the message definition for a topic.'''
 
         if len(self.bagfiles) == 0:
             self.find_bag_files(self.directory)
@@ -251,11 +281,26 @@ class bag_collection():
             foundTopic = False
             for bagtopic, msg, t in b.read_messages():
                 if bagtopic == topic:
-                    print(msg._full_text)
+                    return msg._full_text
                     foundTopic = True
                     break
             if foundTopic:
                 break
+        return None
+
+    def print_message_def(self,topic=None):
+        '''A method to print the message definition for a topic.'''
+
+        if topic in self.msg_defs:
+            print(f"Message definition for topic {topic}:")
+            print(self.msg_defs[topic])
+            return
+
+        msg_def = self.get_message_definition(topic=topic)
+        if msg_def is not None:
+            print(f"Message definition for topic {topic}:")
+            print(msg_def)
+        
 
 
 
