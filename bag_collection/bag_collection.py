@@ -11,6 +11,38 @@ import re
 import numpy as np
 import datetime
 import pickle
+from multiprocessing import Pool, cpu_count
+from tqdm import tqdm
+
+def _process_bag_info(baginfo):
+    """
+    Worker function for multiprocessing: open a bag file and extract metadata.
+    Returns a tuple (path, result_dict) where result_dict contains keys:
+      - start_time (float) or None
+      - end_time (float) or None
+      - topics (list) or []
+      - msg_types (list) or []
+      - error (None or str)
+    """
+    path = baginfo.get('path') if isinstance(baginfo, dict) else baginfo
+    try:
+        b = rosbag.Bag(path)
+        start = b.get_start_time()
+        end = b.get_end_time()
+        tt = b.get_type_and_topic_info()
+        topics = list(tt.topics.keys())
+        msg_types = list(tt.msg_types.keys())
+        b.close()
+        return (path, {
+            'start_time': start,
+            'end_time': end,
+            'topics': topics,
+            'msg_types': msg_types,
+            'error': None
+        })
+    except Exception as e:
+        return (path, {'error': str(e)})
+
 
 class bag_collection():
     '''A class to manage a collection of bag files.'''
@@ -58,7 +90,8 @@ class bag_collection():
             'end_time': end time of bag file (UNIX timestamp)
             'topics': list of topics in bag file
             'msg_types': list of message types in bag file
-            'msg_defs': dictionary of message definitions for message types in the collection
+            'msg_defs': dictionary of message definitions for message types in 
+            the collection
 
         '''
         if not force_reindex and os.path.exists(pickle_file):
@@ -81,41 +114,99 @@ class bag_collection():
         if len(self.bagfiles) == 0:
             self.find_bag_files(path=self.directory)
 
-        z = 0
-        toskip=[]
+        # Decide which files need indexing (skip unchanged ones if we had a previous index)
+        bagfiles_to_process = []
+        total_bytes_to_process = 0
+
         for baginfo in self.bagfiles:
+            if (baginfo['path'] in prev_paths and 
+                baginfo['size'] == prev_bagfiles['size']):
+                    continue
+            bagfiles_to_process.append(baginfo)
+            total_bytes_to_process += baginfo['size']
 
-            # skip files that haven't changed since last index
-            if baginfo['path'] in prev_paths and baginfo['size'] == prev_bagfiles(baginfo['path'])['size']:
-                z+=1
-                continue
+        # Parallel indexing of bag files.
+        nprocs = max(1, min(cpu_count(), 4))  # limit to reasonable number of processes
+        print(f"Indexing {len(bagfiles_to_process)} files with {nprocs} workers...")
+        indexing_results = []
 
-            dt = datetime.datetime.now()
-            try:
-                b = rosbag.Bag(baginfo['path'])
-                # Capture the start and end time of the bag file.
-                baginfo.update({'start_time': b.get_start_time()})
-                baginfo.update({'end_time': b.get_end_time()})
-                # Get topics and message types. 
-                # These are stored as a global set for the collection, and also
-                # in the baginfo dictionary for each bag file.
-                tt = b.get_type_and_topic_info()
-                self.msg_types = self.msg_types.union(tt.msg_types.keys())
-                self.topics = self.topics.union(tt.topics.keys())
-                baginfo.update({'topics': list(tt.topics.keys())})
-                baginfo.update({'msg_types': list(tt.msg_types.keys())})
-                # Get message definitions for the global set of message types.
-                for k,v in tt.msg_types.items():
-                    if k not in self.msg_defs:
-                        self.msg_defs[k] = self.get_message_definition(v)
-                b.close()
+        dt = datetime.datetime.now()
+        if bagfiles_to_process:
+            with Pool(processes=nprocs) as pool:
+                # map each baginfo dict to worker
+                bytes_processed = 0
+                with tqdm(total=total_bytes_to_process, unit='B', unit_scale=True, desc="Indexing") as pbar:
+                    for path, res in pool.imap_unordered(_process_bag_info, bagfiles_to_process):
+                        indexing_results.append((path, res))
+                        if res['error'] is None:
+                            bytes_processed = next(bf['size'] for bf in bagfiles_to_process if bf['path'] == path)
+                            # print(f"Processed {path}: {bytes_processed}/{total_bytes_to_process} bytes ({(bytes_processed/total_bytes_to_process)*100:.2f}%)")
+                            pbar.update(bytes_processed)
+                    
+        z = 0
+        toskip = []                    
+        # Update bagfiles with results
+        for baginfo in self.bagfiles:
+            for path, res in indexing_results:
+                if baginfo['path'] == path:
+                    if res['error'] is None:
+                        # Capture the start and end time of the bag file.
+                        baginfo.update({'start_time': res['start_time']})
+                        baginfo.update({'end_time': res['end_time']})
+                        # Capture the topics and message types.
+                        # These are stored in a global set for the collection, and also
+                        # in the baginfo dictionary for each bag file.
+                        baginfo.update({'topics': res['topics']})
+                        baginfo.update({'msg_types': res['msg_types']})
+                        self.msg_types = self.msg_types.union(res['msg_types'])
+                        self.topics = self.topics.union(res['topics'])
+                        # Capture the message definitions for the global set of message types.
+                        for message_type in res['msg_types']:
+                            if message_type not in self.msg_defs:
+                                self.msg_defs[message_type] = self.get_message_definition(message_type)
+                    else:
+                        print(f"Error processing {path}: {res['error']}")
+                        toskip.append(z)
+            z=z+1
+        
+        print("%d, %f" % (z,(datetime.datetime.now()-dt).total_seconds()) )
 
-            except (rosbag.ROSBagException, rosbag.ROSBagUnindexedException, ValueError):
-                print("Error. Skipping %s" % baginfo["path"])
-                toskip.append(z)
-            print(baginfo)
-            z+=1
-            print("%d, %f" % (z,(datetime.datetime.now()-dt).total_seconds()) )
+        
+        # z = 0
+        # toskip=[]
+        # for baginfo in self.bagfiles:
+
+        #     # skip files that haven't changed since last index
+        #     if baginfo['path'] in prev_paths and baginfo['size'] == prev_bagfiles(baginfo['path'])['size']:
+        #         z+=1
+        #         continue
+
+        #     dt = datetime.datetime.now()
+        #     try:
+        #         b = rosbag.Bag(baginfo['path'])
+        #         # Capture the start and end time of the bag file.
+        #         baginfo.update({'start_time': b.get_start_time()})
+        #         baginfo.update({'end_time': b.get_end_time()})
+        #         # Get topics and message types. 
+        #         # These are stored as a global set for the collection, and also
+        #         # in the baginfo dictionary for each bag file.
+        #         tt = b.get_type_and_topic_info()
+        #         self.msg_types = self.msg_types.union(tt.msg_types.keys())
+        #         self.topics = self.topics.union(tt.topics.keys())
+        #         baginfo.update({'topics': list(tt.topics.keys())})
+        #         baginfo.update({'msg_types': list(tt.msg_types.keys())})
+        #         # Get message definitions for the global set of message types.
+        #         for k,v in tt.msg_types.items():
+        #             if k not in self.msg_defs:
+        #                 self.msg_defs[k] = self.get_message_definition(v)
+        #         b.close()
+
+        #     except (rosbag.ROSBagException, rosbag.ROSBagUnindexedException, ValueError):
+        #         print("Error. Skipping %s" % baginfo["path"])
+        #         toskip.append(z)
+        #     print(baginfo)
+        #     z+=1
+        #     print("%d, %f" % (z,(datetime.datetime.now()-dt).total_seconds()) )
 
         for i in sorted(toskip, reverse=True):
             del self.bagfiles[i]
@@ -131,7 +222,7 @@ class bag_collection():
             pickle.dump({
                 'bagfiles': self.bagfiles,
                 'topics': self.topics,
-                'msg_types': self.msg_types
+                'msg_types': self.msg_types,
                 'msg_defs': self.msg_defs
             }, f)
         print(f"Index saved to {pickle_file}.")
