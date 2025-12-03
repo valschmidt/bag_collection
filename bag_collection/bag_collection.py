@@ -98,6 +98,9 @@ class bag_collection():
             print(f"Loading index from {pickle_file}...")
             with open(pickle_file, 'rb') as f:
                 data = pickle.load(f)
+                if data['collection_directory'] != self.directory:
+                    print("Error: pickle file was created for a different directory.")
+                    return
                 # self.bagfiles = data['bagfiles']
                 prev_bagfiles = data['bagfiles']
                 prev_paths = [bf['path'] for bf in prev_bagfiles]
@@ -220,6 +223,7 @@ class bag_collection():
         # Save index to pickle
         with open(pickle_file, 'wb') as f:
             pickle.dump({
+                'collection_directory': self.directory,
                 'bagfiles': self.bagfiles,
                 'topics': self.topics,
                 'msg_types': self.msg_types,
