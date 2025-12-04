@@ -46,8 +46,12 @@ def _process_bag_info(baginfo):
 
 class bag_collection():
     '''A class to manage a collection of bag files.'''
-    def __init__(self,directory):
+    def __init__(self,directory = None, index = None):
 
+        if directory is None and index is not None:
+            self.load_index(pickle_file=index)
+            return
+        
         self.directory = directory
         self.bagfiles = []
         self.file_index = None
@@ -75,6 +79,28 @@ class bag_collection():
         for f in self.bagfiles:
             print("\t%s" % f['path'])
 
+    def load_index(self,pickle_file='bag_collection.pkl'):
+        '''Load an index of the collection from a pickle file.'''
+
+        print(f"Loading index from {pickle_file}...")
+        with open(pickle_file, 'rb') as f:
+            data = pickle.load(f)
+
+            self.directory = data.get('collection_directory')
+            if self.directory is None:
+                print("Error: pickle file does not contain collection directory.")
+                print("Please re-index the collection.")
+                return
+            if data['collection_directory'] != self.directory:
+                print("Error: pickle file was created for a different directory.")
+                return
+            # self.bagfiles = data['bagfiles']
+            prev_bagfiles = data['bagfiles']
+            prev_paths = [bf['path'] for bf in prev_bagfiles]
+            self.topics = set(data['topics'])
+            self.msg_types = set(data['msg_types'])
+            self.msg_defs = data['msg_defs']
+            
 
     def index_collection(self, force_reindex=False,pickle_file='bag_collection.pkl'):
         '''Create an index of the collection
@@ -95,18 +121,7 @@ class bag_collection():
 
         '''
         if not force_reindex and os.path.exists(pickle_file):
-            print(f"Loading index from {pickle_file}...")
-            with open(pickle_file, 'rb') as f:
-                data = pickle.load(f)
-                if data['collection_directory'] != self.directory:
-                    print("Error: pickle file was created for a different directory.")
-                    return
-                # self.bagfiles = data['bagfiles']
-                prev_bagfiles = data['bagfiles']
-                prev_paths = [bf['path'] for bf in prev_bagfiles]
-                self.topics = data['topics']
-                self.msg_types = data['msg_types']
-                self.msg_defs = data['msg_defs']
+            self.load_index(pickle_file)
             return
 
         print("Indexing collection...")
@@ -292,6 +307,26 @@ class bag_collection():
                         print("\t%s" % t)
         else:
             print("No topics.")
+
+    def search_message_definitions(self,regexp=None):
+        '''A method to search message definitions for a regular expression.'''
+
+        if len(self.msg_defs) == 0:
+            self.index_collection()
+
+        print("MESSAGE DEFINITIONS MATCHING REGEXP:")
+        if len(self.msg_defs) != 0:
+            if regexp is None:
+                for k,v in self.msg_defs.items():
+                    print(f"Message type: {k}")
+                    print(v)
+            else:
+                for k,v in self.msg_defs.items():
+                    if re.search(regexp,v):
+                        print(f"Message type: {k}")
+                        print(v)
+        else:
+            print("No message definitions.")
 
     def get_fields_by_topic(self,topic=None):
         '''A method to show what fields are available in a message.'''
