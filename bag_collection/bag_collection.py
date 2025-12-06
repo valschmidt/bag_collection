@@ -16,34 +16,7 @@ import pickle
 from multiprocessing import Pool, cpu_count
 from tqdm import tqdm
 
-def _process_bag_info(baginfo):
-    """
-    Worker function for multiprocessing: open a bag file and extract metadata.
-    Returns a tuple (path, result_dict) where result_dict contains keys:
-      - start_time (float) or None
-      - end_time (float) or None
-      - topics (list) or []
-      - msg_types (list) or []
-      - error (None or str)
-    """
-    path = baginfo.get('path') if isinstance(baginfo, dict) else baginfo
-    try:
-        b = rosbag.Bag(path)
-        start = b.get_start_time()
-        end = b.get_end_time()
-        tt = b.get_type_and_topic_info()
-        topics = list(tt.topics.keys())
-        msg_types = list(tt.msg_types.keys())
-        b.close()
-        return (path, {
-            'start_time': start,
-            'end_time': end,
-            'topics': topics,
-            'msg_types': msg_types,
-            'error': None
-        })
-    except Exception as e:
-        return (path, {'error': str(e)})
+
 
 
 class bag_collection():
@@ -120,6 +93,35 @@ class bag_collection():
             print("Set the directory parameter to the bag_collection constructor to create a new index.")
             return             
 
+    def _process_bag_info(baginfo):
+        """
+        Worker function for multiprocessing: open a bag file and extract metadata.
+        Returns a tuple (path, result_dict) where result_dict contains keys:
+        - start_time (float) or None
+        - end_time (float) or None
+        - topics (list) or []
+        - msg_types (list) or []
+        - error (None or str)
+        """
+        path = baginfo.get('path') if isinstance(baginfo, dict) else baginfo
+        try:
+            b = rosbag.Bag(path)
+            start = b.get_start_time()
+            end = b.get_end_time()
+            tt = b.get_type_and_topic_info()
+            topics = list(tt.topics.keys())
+            msg_types = list(tt.msg_types.keys())
+            b.close()
+            return (path, {
+                'start_time': start,
+                'end_time': end,
+                'topics': topics,
+                'msg_types': msg_types,
+                'error': None
+            })
+        except Exception as e:
+            return (path, {'error': str(e)})
+
     def index_collection(self, force_reindex=False,pickle_file='bag_collection.pkl'):
         '''Create an index of the collection
         
@@ -175,7 +177,7 @@ class bag_collection():
                 # map each baginfo dict to worker
                 bytes_processed = 0
                 with tqdm(total=total_bytes_to_process, unit='B', unit_scale=True, desc="Indexing") as pbar:
-                    for path, res in pool.imap_unordered(_process_bag_info, bagfiles_to_process):
+                    for path, res in pool.imap_unordered(self._process_bag_info, bagfiles_to_process):
                         indexing_results.append((path, res))
                         if res['error'] is None:
                             bytes_processed = next(bf['size'] for bf in bagfiles_to_process if bf['path'] == path)
@@ -373,13 +375,23 @@ class bag_collection():
         dts = list()
         #values = list()
         values = dict()
+
+        if start_time is None:
+            start_time = b.get_start_time()
+        if end_time is None:
+            end_time = b.get_end_time()
         
         for topic,message,timestamp in b.read_messages(topics=topic,
                                                        start_time=rospy.Time(start_time),
                                                        end_time=rospy.Time(end_time)):
 
-            dts.append(float(message.header.stamp.secs) + 
-                       float(message.header.stamp.nsecs/1e9))
+            # Check if message has a header field with a timestamp
+            if hasattr(message, 'header') and hasattr(message.header, 'stamp'):
+                dts = float(message.header.stamp.secs) + float(message.header.stamp.nsecs / 1e9)
+            else:
+                # Fall back to rosbag timestamp
+                dts = timestamp.to_sec()
+
             #values.append(eval('message.' + field))
             for field in fields:              
                 # values[field].append(eval('message.' + field))
@@ -451,32 +463,19 @@ class bag_collection():
         start_ts = to_unix(start_time)
         end_ts = to_unix(end_time)
 
-        timestamp = []
-        values = []
         bag_dfs = []
         if len(self.bagfiles) == 0:
             self.find_bag_files(path=self.directory)
-        z = 0
+
         bags_for_processing = []
         for baginfo in self.bagfiles:
             if start_ts is not None and baginfo.get('end_time',0) < start_ts:
                 continue
             if end_ts is not None and baginfo.get('start_time',0) > end_ts:
                 continue
-            print("Processing %s." % baginfo["path"])
-            #t, f = self.get_field_from_bag(filename=baginfo['path'],topic=topic,field=field,
-            #                               start_time=start_ts,
-            #                               end_time=end_ts)
+
             bags_for_processing.append((baginfo['path'], topic, fields, start_ts, end_ts))
         
-            '''
-            bag_df = self.get_fields_from_bag(filename=baginfo['path'],
-                                              topic=topic,
-                                              fields=fields,
-                                              start_time=start_ts,
-                                              end_time=end_ts)
-            '''
-
 
         nprocs = max(1, min(cpu_count()-1, 8))  # limit to reasonable number of processes
                         
@@ -538,15 +537,21 @@ class bag_collection():
         
 
 
-    def get_start_time(self):
+    def get_start_time(self,human=False):
         '''Get the earliest start time in the collection.'''
         start_times = [bf.get('start_time', float('inf')) for bf in self.bagfiles]
-        return min(start_times) if start_times else None
+        start_time = min(start_times) if start_times else None
+        if human and start_time is not None:
+            return datetime.datetime.fromtimestamp(start_time).isoformat()
+        return start_time
     
-    def get_end_time(self):
+    def get_end_time(self, humna=False):
         '''Get the latest end time in the collection.'''
         end_times = [bf.get('end_time', float('-inf')) for bf in self.bagfiles]
-        return max(end_times) if end_times else None
+        end_time = max(end_times) if end_times else None
+        if human and end_time is not None:
+            return datetime.datetime.fromtimestamp(end_time).isoformat()
+        return end_time
     
     def get_field_by_interval(self, topic=None, field=None, interval_min=60):
         '''Get field data sampled at a regular interval in minutes over the collection.'''
