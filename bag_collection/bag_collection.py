@@ -48,16 +48,22 @@ class bag_collection():
     '''A class to manage a collection of bag files.'''
     def __init__(self,directory = None, index = None):
 
+        self.directory = directory
         if directory is None and index is not None:
+            self.bagfiles = None
             self.load_index(pickle_file=index)
             return
         
-        self.directory = directory
+
         self.bagfiles = []
         self.file_index = None
         self.topics = set()
         self.msg_types = set()
         self.msg_defs = dict()
+
+        # Variables that aid in tracking changes since last index
+        self.prev_bagfiles = []
+        self.prev_paths = []
         
     def find_bag_files(self,path, extension='.bag'):
         """Recursively finds all files with the given extension in the specified directory."""
@@ -86,20 +92,27 @@ class bag_collection():
         with open(pickle_file, 'rb') as f:
             data = pickle.load(f)
 
-            self.directory = data.get('collection_directory')
-            if self.directory is None:
-                print("Error: pickle file does not contain collection directory.")
-                print("Please re-index the collection.")
-                return
-            if data['collection_directory'] != self.directory:
+            if self.directory is None and data.get('collection_directory') is not None:
+                self.directory = data.get('collection_directory')
+
+            if data.get('collection_directory') != self.directory:
                 print("Error: pickle file was created for a different directory.")
                 return
-            # self.bagfiles = data['bagfiles']
-            prev_bagfiles = data['bagfiles']
-            prev_paths = [bf['path'] for bf in prev_bagfiles]
+
+            if self.directory is None and data.get('collection_directory') is None:
+                print(f"Error: pickle file {pickle_file} does not contain collection directory.")
+                print("Please re-index the collection.")
+                return
+
+            if self.bagfiles is None: 
+                self.bagfiles = data['bagfiles']
             self.topics = set(data['topics'])
             self.msg_types = set(data['msg_types'])
             self.msg_defs = data['msg_defs']
+
+            # Capture previous bagfiles for change detection during re-indexing
+            self.prev_bagfiles = data['bagfiles']
+            self.prev_paths = [bf['path'] for bf in self.prev_bagfiles]
             
 
     def index_collection(self, force_reindex=False,pickle_file='bag_collection.pkl'):
@@ -120,25 +133,28 @@ class bag_collection():
             the collection
 
         '''
-        if not force_reindex and os.path.exists(pickle_file):
+        # If an index file exists, load it first to get previous state. 
+        # Also if index file existed and force_reindex is False, skip indexing.
+        if os.path.exists(pickle_file):
             self.load_index(pickle_file)
-            return
+            if not force_reindex:
+                return
+        else:
+            print("Indexing collection...")
+            self.msg_types = set()
+            self.topics = set()
 
-        print("Indexing collection...")
-        self.msg_types = set()
-        self.topics = set()
-        prev_paths = []
-
+        # This will find all bag files, adding new ones if needed.
         if len(self.bagfiles) == 0:
-            self.find_bag_files(path=self.directory)
+            self.find_bag_files(path=self.directory)        
 
         # Decide which files need indexing (skip unchanged ones if we had a previous index)
         bagfiles_to_process = []
         total_bytes_to_process = 0
 
         for baginfo in self.bagfiles:
-            if (baginfo['path'] in prev_paths and 
-                baginfo['size'] == prev_bagfiles['size']):
+            if (baginfo['path'] in self.prev_paths and 
+                baginfo['size'] == self.prev_bagfiles['size']):
                     continue
             bagfiles_to_process.append(baginfo)
             total_bytes_to_process += baginfo['size']
@@ -163,6 +179,7 @@ class bag_collection():
                     
         z = 0
         toskip = []                    
+
         # Update bagfiles with results
         for baginfo in self.bagfiles:
             for path, res in indexing_results:
@@ -171,6 +188,24 @@ class bag_collection():
                         # Capture the start and end time of the bag file.
                         baginfo.update({'start_time': res['start_time']})
                         baginfo.update({'end_time': res['end_time']})
+
+                        # Capture the message definitions if we've never seen the topic
+                        # before for the global set of topics for the collection.
+                        nprocs = max(1, min(cpu_count()-1, 8))  # limit to reasonable number of processes
+                        with Pool(processes=nprocs) as pool:
+                            with tqdm(total=len(res['topics']), unit_scale=True, desc="Archiving Message Definitions") as pbar:
+                                missing_topics = [(path, t) for t in res['topics'] if t not in self.msg_defs]
+                                for missing_topic, msg_definition in pool.imap_unordered(self._get_message_definition, missing_topics):
+                                    self.msg_defs[missing_topic] = msg_definition
+                                    pbar.update(1)
+                            '''
+                            for message_topic in res['topics']:
+                                if message_topic not in self.topics:
+                                    print('Searching for message definition for topic: %s' % message_topic)
+                                    self.msg_defs[message_topic] = self.get_message_definition(path=baginfo['path'], topic=message_topic)
+                                pbar.update(1)
+                            '''
+
                         # Capture the topics and message types.
                         # These are stored in a global set for the collection, and also
                         # in the baginfo dictionary for each bag file.
@@ -178,10 +213,6 @@ class bag_collection():
                         baginfo.update({'msg_types': res['msg_types']})
                         self.msg_types = self.msg_types.union(res['msg_types'])
                         self.topics = self.topics.union(res['topics'])
-                        # Capture the message definitions for the global set of message types.
-                        for message_type in res['msg_types']:
-                            if message_type not in self.msg_defs:
-                                self.msg_defs[message_type] = self.get_message_definition(message_type)
                     else:
                         print(f"Error processing {path}: {res['error']}")
                         toskip.append(z)
@@ -198,33 +229,6 @@ class bag_collection():
         #     if baginfo['path'] in prev_paths and baginfo['size'] == prev_bagfiles(baginfo['path'])['size']:
         #         z+=1
         #         continue
-
-        #     dt = datetime.datetime.now()
-        #     try:
-        #         b = rosbag.Bag(baginfo['path'])
-        #         # Capture the start and end time of the bag file.
-        #         baginfo.update({'start_time': b.get_start_time()})
-        #         baginfo.update({'end_time': b.get_end_time()})
-        #         # Get topics and message types. 
-        #         # These are stored as a global set for the collection, and also
-        #         # in the baginfo dictionary for each bag file.
-        #         tt = b.get_type_and_topic_info()
-        #         self.msg_types = self.msg_types.union(tt.msg_types.keys())
-        #         self.topics = self.topics.union(tt.topics.keys())
-        #         baginfo.update({'topics': list(tt.topics.keys())})
-        #         baginfo.update({'msg_types': list(tt.msg_types.keys())})
-        #         # Get message definitions for the global set of message types.
-        #         for k,v in tt.msg_types.items():
-        #             if k not in self.msg_defs:
-        #                 self.msg_defs[k] = self.get_message_definition(v)
-        #         b.close()
-
-        #     except (rosbag.ROSBagException, rosbag.ROSBagUnindexedException, ValueError):
-        #         print("Error. Skipping %s" % baginfo["path"])
-        #         toskip.append(z)
-        #     print(baginfo)
-        #     z+=1
-        #     print("%d, %f" % (z,(datetime.datetime.now()-dt).total_seconds()) )
 
         for i in sorted(toskip, reverse=True):
             del self.bagfiles[i]
@@ -299,10 +303,10 @@ class bag_collection():
             self.index_collection()
         if len(self.topics) != 0:
             if regexp is None:
-                for t in self.topics:
+                for t in list(self.topics).sort():
                     print("\t%s" % t)
             else:
-                for t in self.topics:
+                for t in list(self.topics).sort():
                     if re.search(regexp,t):
                         print("\t%s" % t)
         else:
@@ -397,26 +401,33 @@ class bag_collection():
 
         return timestamp,values
 
-    def get_message_definition(self,topic=None):
+    def get_message_definition(self,path=None, topic=None):
         '''A method to get the message definition for a topic.'''
 
         if len(self.bagfiles) == 0:
             self.find_bag_files(self.directory)
 
-        for baginfo in self.bagfiles:
-            if topic not in baginfo.get('topics',[]):
-                continue
-            print("Processing %s." % baginfo["path"])
-            b = rosbag.Bag(baginfo['path'])
+        # Look in the specified path. If no path is given, search all bag files.
+        if path is not None:
+            b = rosbag.Bag(path)
             foundTopic = False
             for bagtopic, msg, t in b.read_messages():
                 if bagtopic == topic:
-                    return msg._full_text
-                    foundTopic = True
-                    break
-            if foundTopic:
-                break
+                    return topic, msg._full_text
+        else:
+            for baginfo in self.bagfiles:
+                if topic not in baginfo.get('topics',[]):
+                    continue
+                print("Processing %s." % baginfo["path"])
+                b = rosbag.Bag(baginfo['path'])
+                foundTopic = False
+                for bagtopic, msg, t in b.read_messages():
+                    if bagtopic == topic:
+                        return topic, msg._full_text
+
         return None
+    def _get_message_definition(self,args):
+        return self.get_message_definition(path=args[0], topic=args[1])
 
     def print_message_def(self,topic=None):
         '''A method to print the message definition for a topic.'''
