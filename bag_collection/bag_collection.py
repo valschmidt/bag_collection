@@ -346,27 +346,91 @@ class bag_collection():
 
         pass
 
-    def get_field_from_bag(self,filename=None,topic = None, field = None,
+    def get_fields_from_bag(self,filename=None,topic = None, fields = None,
                            start_time=None, end_time=None):
-        '''A utility function to extract a field from a single bag file.
+        '''A utility function to extract fields from a single topic from a single bag file.
         
+        Parameters:
+        filename : str
+            The path to the bag file.
+        topic : str
+            The topic to extract data from.
+        fields : list or str
+            The field or list of fields to extract from the topic messages.
+        start_time : float
+            The start time (UNIX timestamp) to extract data from.
+        end_time : float
+            The end time (UNIX timestamp) to extract data to.
+        
+        Returns:
+        pd.DataFrame
+            A DataFrame with a datetime index and columns for each field.
+
+        
+
         TODO: Should check for header and use that if it exists, otherwise
         use the ROS timestamp.'''
         b = rosbag.Bag(filename)
         dts = list()
-        values = list()
+        #values = list()
+        values = dict()
+        
         for topic,message,timestamp in b.read_messages(topics=topic,
                                                        start_time=rospy.Time(start_time),
                                                        end_time=rospy.Time(end_time)):
 
             dts.append(float(message.header.stamp.secs) + 
                        float(message.header.stamp.nsecs/1e9))
-            values.append(eval('message.' + field))
+            #values.append(eval('message.' + field))
+            for field in fields:              
+                # values[field].append(eval('message.' + field))
+
+                # Try to extract the field normally
+                field_value = eval('message.' + field)
+                
+                # Check if it's a ROS message type (has __slots__)
+                if hasattr(field_value, '__slots__'):
+                    # It's a nested message - flatten all its fields
+                    for subfield in field_value.__slots__:
+                        subfield_key = f"{field}.{subfield}"
+                        if subfield_key not in values:
+                            values[subfield_key] = []
+                        values[subfield_key].append(getattr(field_value, subfield))
+                else:
+                    # It's a scalar value
+                    if field not in values:
+                        values[field] = []
+                    values[field].append(field_value)
+        
+        # for field in values.keys():
+        #     print("The length of field %s is %d" % (field, len(values[field])))
+
+        b.close()
+        df = pd.DataFrame(values)
+        df['timestamp'] = pd.to_datetime(dts, unit='s')
+        df.set_index('timestamp', inplace=True)
+        
+        # return dts, values
+        return df
     
-        return dts, values
-    
-    def get_field(self, topic=None, field=None, start_time=None, end_time=None):
-        '''A method to get all occurances of a field in the collection'''
+    def get_fields(self, topic=None, fields=None, start_time=None, end_time=None):
+        '''A method to get all occurances of a field in the collection.
+        
+        Parameters:
+        topic : str
+            The topic to extract data from.
+            fields : list or str
+            The field or list of fields to extract from the topic messages.
+        start_time : float or str
+            The start time (UNIX timestamp or "YYYY-MM-DD HH:MM:SS") to extract data from.
+        end_time : float or str
+            The end time (UNIX timestamp or "YYYY-MM-DD HH:MM:SS") to extract data to.
+            
+        Returns:
+        pd.DataFrame
+            A DataFrame with a datetime index and columns for each field.
+        
+        '''
 
         # Laying out the thinking here of how to handle multiple topics and multiple 
         # fields in the same topic. For now, only one topic and one field at a time.
@@ -390,6 +454,7 @@ class bag_collection():
 
         timestamp = []
         values = []
+        bag_dfs = []
         if len(self.bagfiles) == 0:
             self.find_bag_files(path=self.directory)
         z = 0
@@ -399,11 +464,17 @@ class bag_collection():
             if end_ts is not None and baginfo.get('start_time',0) > end_ts:
                 continue
             print("Processing %s." % baginfo["path"])
-            t, f = self.get_field_from_bag(filename=baginfo['path'],topic=topic,field=field,
-                                           start_time=start_ts,
-                                           end_time=end_ts)
-            timestamp.extend(t)
-            values.extend(f)
+            #t, f = self.get_field_from_bag(filename=baginfo['path'],topic=topic,field=field,
+            #                               start_time=start_ts,
+            #                               end_time=end_ts)
+            bag_df = self.get_fields_from_bag(filename=baginfo['path'],
+                                              topic=topic,
+                                              fields=fields,
+                                              start_time=start_ts,
+                                              end_time=end_ts)
+            # timestamp.extend(t)
+            # values.extend(f)
+            bag_dfs.append(bag_df)
             z = z + 1
      
             '''
@@ -420,9 +491,8 @@ class bag_collection():
             timestamp = timestamp.tolist()
             values = values.tolist()
             '''
-            df = pd.DataFrame({'timestamp': timestamp, 'value': values})
-            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
-            df.set_index('timestamp', inplace=True)
+            #df = pd.DataFrame({'timestamp': timestamp, 'value': values})
+        df = pd.concat(bag_dfs, axis=0)
         return df
 
     def get_message_definition(self,path=None, topic=None):
