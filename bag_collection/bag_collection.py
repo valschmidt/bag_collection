@@ -7,6 +7,7 @@
 
 import os
 import rosbag
+import rospy
 import re
 import numpy as np
 import pandas as pd
@@ -345,7 +346,7 @@ class bag_collection():
 
         pass
 
-    def get_field_from_bag(self,filename=None,topic = None,field = None,
+    def get_field_from_bag(self,filename=None,topic = None, field = None,
                            start_time=None, end_time=None):
         '''A utility function to extract a field from a single bag file.
         
@@ -355,8 +356,8 @@ class bag_collection():
         dts = list()
         values = list()
         for topic,message,timestamp in b.read_messages(topics=topic,
-                                                       start_time=start_time,
-                                                       end_time=end_time):
+                                                       start_time=rospy.Time(start_time),
+                                                       end_time=rospy.Time(end_time)):
 
             dts.append(float(message.header.stamp.secs) + 
                        float(message.header.stamp.nsecs/1e9))
@@ -366,6 +367,14 @@ class bag_collection():
     
     def get_field(self, topic=None, field=None, start_time=None, end_time=None):
         '''A method to get all occurances of a field in the collection'''
+
+        # Laying out the thinking here of how to handle multiple topics and multiple 
+        # fields in the same topic. For now, only one topic and one field at a time.
+
+        # Optionally pass a dictionary keyed by topic with list of fields to get for each topic.
+
+        # Be able to send a list of fields to get_field_from_bag.
+        # These could be converted to a single dataframe per bag file, then concatenated.
 
         # Convert string times to UNIX timestamps if provided
         def to_unix(ts):
@@ -391,7 +400,8 @@ class bag_collection():
                 continue
             print("Processing %s." % baginfo["path"])
             t, f = self.get_field_from_bag(filename=baginfo['path'],topic=topic,field=field,
-                                           start_time=start_ts,end_time=end_ts)
+                                           start_time=start_ts,
+                                           end_time=end_ts)
             timestamp.extend(t)
             values.extend(f)
             z = z + 1
