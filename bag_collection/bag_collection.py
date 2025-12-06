@@ -9,6 +9,7 @@ import os
 import rosbag
 import re
 import numpy as np
+import pandas as pd
 import datetime
 import pickle
 from multiprocessing import Pool, cpu_count
@@ -49,12 +50,6 @@ class bag_collection():
     def __init__(self,directory = None, index = None):
 
         self.directory = directory
-        if directory is None and index is not None:
-            self.bagfiles = None
-            self.load_index(pickle_file=index)
-            return
-        
-
         self.bagfiles = []
         self.file_index = None
         self.topics = set()
@@ -64,6 +59,10 @@ class bag_collection():
         # Variables that aid in tracking changes since last index
         self.prev_bagfiles = []
         self.prev_paths = []
+
+        if directory is None and index is not None:
+            self.load_index(pickle_file=index)
+            
         
     def find_bag_files(self,path, extension='.bag'):
         """Recursively finds all files with the given extension in the specified directory."""
@@ -89,31 +88,36 @@ class bag_collection():
         '''Load an index of the collection from a pickle file.'''
 
         print(f"Loading index from {pickle_file}...")
-        with open(pickle_file, 'rb') as f:
-            data = pickle.load(f)
+        if os.path.exists(pickle_file):
+            with open(pickle_file, 'rb') as f:
+                data = pickle.load(f)
 
-            if self.directory is None and data.get('collection_directory') is not None:
-                self.directory = data.get('collection_directory')
+                if self.directory is None and data.get('collection_directory') is not None:
+                    self.directory = data.get('collection_directory')
 
-            if data.get('collection_directory') != self.directory:
-                print("Error: pickle file was created for a different directory.")
-                return
+                if data.get('collection_directory') != self.directory:
+                    print("Error: pickle file was created for a different directory.")
+                    return
 
-            if self.directory is None and data.get('collection_directory') is None:
-                print(f"Error: pickle file {pickle_file} does not contain collection directory.")
-                print("Please re-index the collection.")
-                return
+                if self.directory is None and data.get('collection_directory') is None:
+                    print(f"Error: pickle file {pickle_file} does not contain collection directory.")
+                    print("Please re-index the collection.")
+                    return
 
-            if self.bagfiles is None: 
-                self.bagfiles = data['bagfiles']
-            self.topics = set(data['topics'])
-            self.msg_types = set(data['msg_types'])
-            self.msg_defs = data['msg_defs']
+                if self.bagfiles == []: 
+                    self.bagfiles = data['bagfiles']
+                self.topics = set(data['topics'])
+                self.msg_types = set(data['msg_types'])
+                self.msg_defs = data['msg_defs']
 
-            # Capture previous bagfiles for change detection during re-indexing
-            self.prev_bagfiles = data['bagfiles']
-            self.prev_paths = [bf['path'] for bf in self.prev_bagfiles]
-            
+                # Capture previous bagfiles for change detection during re-indexing
+                self.prev_bagfiles = data['bagfiles']
+                self.prev_paths = [bf['path'] for bf in self.prev_bagfiles]
+        else:
+            print(f"Index file {pickle_file} does not exist.")
+            print("And you have not provided a directory to index.")
+            print("Set the directory parameter to the bag_collection constructor to create a new index.")
+            return             
 
     def index_collection(self, force_reindex=False,pickle_file='bag_collection.pkl'):
         '''Create an index of the collection
@@ -192,12 +196,15 @@ class bag_collection():
                         # Capture the message definitions if we've never seen the topic
                         # before for the global set of topics for the collection.
                         nprocs = max(1, min(cpu_count()-1, 8))  # limit to reasonable number of processes
-                        with Pool(processes=nprocs) as pool:
-                            with tqdm(total=len(res['topics']), unit_scale=True, desc="Archiving Message Definitions") as pbar:
-                                missing_topics = [(path, t) for t in res['topics'] if t not in self.msg_defs]
-                                for missing_topic, msg_definition in pool.imap_unordered(self._get_message_definition, missing_topics):
-                                    self.msg_defs[missing_topic] = msg_definition
-                                    pbar.update(1)
+                        
+                        missing_topics = [(path, t) for t in res['topics'] if t not in self.msg_defs]
+                        if len(missing_topics) !=0:
+                            with Pool(processes=nprocs) as pool:
+                            
+                                with tqdm(total=len(missing_topics), unit_scale=True, desc="Archiving new message definitions") as pbar:
+                                    for missing_topic, msg_definition in pool.imap_unordered(self._get_message_definition, missing_topics):
+                                        self.msg_defs[missing_topic] = msg_definition
+                                        pbar.update(1)
                             '''
                             for message_topic in res['topics']:
                                 if message_topic not in self.topics:
@@ -326,7 +333,8 @@ class bag_collection():
                     print(v)
             else:
                 for k,v in self.msg_defs.items():
-                    if re.search(regexp,v):
+                    if re.search(regexp,v,re.IGNORECASE):
+                        print("------------------------------------------------")
                         print(f"Message type: {k}")
                         print(v)
         else:
@@ -337,7 +345,8 @@ class bag_collection():
 
         pass
 
-    def get_field_from_bag(self,filename=None,topic = None,field = None):
+    def get_field_from_bag(self,filename=None,topic = None,field = None,
+                           start_time=None, end_time=None):
         '''A utility function to extract a field from a single bag file.
         
         TODO: Should check for header and use that if it exists, otherwise
@@ -345,7 +354,9 @@ class bag_collection():
         b = rosbag.Bag(filename)
         dts = list()
         values = list()
-        for topic,message,timestamp in b.read_messages(topics=topic):
+        for topic,message,timestamp in b.read_messages(topics=topic,
+                                                       start_time=start_time,
+                                                       end_time=end_time):
 
             dts.append(float(message.header.stamp.secs) + 
                        float(message.header.stamp.nsecs/1e9))
@@ -379,13 +390,13 @@ class bag_collection():
             if end_ts is not None and baginfo.get('start_time',0) > end_ts:
                 continue
             print("Processing %s." % baginfo["path"])
-            t, f = self.get_field_from_bag(filename=baginfo['path'],topic=topic,field=field)
+            t, f = self.get_field_from_bag(filename=baginfo['path'],topic=topic,field=field,
+                                           start_time=start_ts,end_time=end_ts)
             timestamp.extend(t)
             values.extend(f)
             z = z + 1
-            #if z > 3:
-            #    break
-
+     
+            '''
             timestamp = np.array(timestamp)
             values = np.array(values)
             if start_ts is not None:
@@ -398,8 +409,11 @@ class bag_collection():
                 values = values[mask]
             timestamp = timestamp.tolist()
             values = values.tolist()
-
-        return timestamp,values
+            '''
+            df = pd.DataFrame({'timestamp': timestamp, 'value': values})
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
+            df.set_index('timestamp', inplace=True)
+        return df
 
     def get_message_definition(self,path=None, topic=None):
         '''A method to get the message definition for a topic.'''
@@ -444,4 +458,24 @@ class bag_collection():
         
 
 
+    def get_start_time(self):
+        '''Get the earliest start time in the collection.'''
+        start_times = [bf.get('start_time', float('inf')) for bf in self.bagfiles]
+        return min(start_times) if start_times else None
+    
+    def get_end_time(self):
+        '''Get the latest end time in the collection.'''
+        end_times = [bf.get('end_time', float('-inf')) for bf in self.bagfiles]
+        return max(end_times) if end_times else None
+    
+    def get_field_by_interval(self, topic=None, field=None, interval_min=60):
+        '''Get field data sampled at a regular interval in minutes over the collection.'''
 
+        intervals = np.arange(self.get_start_time(), self.get_end_time(), interval_min*60)
+        intervals = intervals.tolist()
+        intervals = intervals + [self.get_end_time()] if intervals[-1] < self.get_end_time() else intervals
+        for interval in intervals:
+            df = self.get_field(topic=topic, field=field, start_time=interval, end_time=interval+interval)
+            df.to_pickle(f"{topic.replace('/','_')}_{field}_{interval:.2f}.pkl")
+
+        return df
