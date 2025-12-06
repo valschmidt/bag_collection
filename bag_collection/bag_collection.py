@@ -206,13 +206,7 @@ class bag_collection():
                                     for missing_topic, msg_definition in pool.imap_unordered(self._get_message_definition, missing_topics):
                                         self.msg_defs[missing_topic] = msg_definition
                                         pbar.update(1)
-                            '''
-                            for message_topic in res['topics']:
-                                if message_topic not in self.topics:
-                                    print('Searching for message definition for topic: %s' % message_topic)
-                                    self.msg_defs[message_topic] = self.get_message_definition(path=baginfo['path'], topic=message_topic)
-                                pbar.update(1)
-                            '''
+
 
                         # Capture the topics and message types.
                         # These are stored in a global set for the collection, and also
@@ -346,9 +340,14 @@ class bag_collection():
 
         pass
 
+    def _get_fields_from_bag(self,args):
+        '''A utility method to unpack arguments for multiprocessing.'''
+        return self.get_fields_from_bag(filename=args[0], topic=args[1], fields=args[2],
+                                       start_time=args[3], end_time=args[4])
+
     def get_fields_from_bag(self,filename=None,topic = None, fields = None,
                            start_time=None, end_time=None):
-        '''A utility function to extract fields from a single topic from a single bag file.
+        '''A function to extract fields from a single topic from a single bag file.
         
         Parameters:
         filename : str
@@ -458,6 +457,7 @@ class bag_collection():
         if len(self.bagfiles) == 0:
             self.find_bag_files(path=self.directory)
         z = 0
+        bags_for_processing = []
         for baginfo in self.bagfiles:
             if start_ts is not None and baginfo.get('end_time',0) < start_ts:
                 continue
@@ -467,32 +467,32 @@ class bag_collection():
             #t, f = self.get_field_from_bag(filename=baginfo['path'],topic=topic,field=field,
             #                               start_time=start_ts,
             #                               end_time=end_ts)
+            bags_for_processing.append((baginfo['path'], topic, fields, start_ts, end_ts))
+        
+            '''
             bag_df = self.get_fields_from_bag(filename=baginfo['path'],
                                               topic=topic,
                                               fields=fields,
                                               start_time=start_ts,
                                               end_time=end_ts)
-            # timestamp.extend(t)
-            # values.extend(f)
-            bag_dfs.append(bag_df)
-            z = z + 1
-     
             '''
-            timestamp = np.array(timestamp)
-            values = np.array(values)
-            if start_ts is not None:
-                mask = timestamp >= start_ts
-                timestamp = timestamp[mask]
-                values = values[mask]
-            if end_ts is not None:
-                mask = timestamp <= end_ts
-                timestamp = timestamp[mask]
-                values = values[mask]
-            timestamp = timestamp.tolist()
-            values = values.tolist()
-            '''
+
+
+        nprocs = max(1, min(cpu_count()-1, 8))  # limit to reasonable number of processes
+                        
+        if len(bags_for_processing) !=0:
+            with Pool(processes=nprocs) as pool:
+                with tqdm(total=len(bags_for_processing), unit_scale=True, desc="Extracting fields from topic") as pbar:
+                        for bag_df in pool.imap_unordered(self._get_fields_from_bag, bags_for_processing):
+                                bag_dfs.append(bag_df)
+                                pbar.update(1)
+
+            #bag_dfs.append(bag_df)
+            
             #df = pd.DataFrame({'timestamp': timestamp, 'value': values})
+
         df = pd.concat(bag_dfs, axis=0)
+        df.sort_index(inplace=True)
         return df
 
     def get_message_definition(self,path=None, topic=None):
