@@ -372,7 +372,7 @@ class bag_collection():
         TODO: Should check for header and use that if it exists, otherwise
         use the ROS timestamp.'''
         b = rosbag.Bag(filename)
-        dts = list()
+        dts = []
         #values = list()
         values = dict()
 
@@ -387,10 +387,10 @@ class bag_collection():
 
             # Check if message has a header field with a timestamp
             if hasattr(message, 'header') and hasattr(message.header, 'stamp'):
-                dts = float(message.header.stamp.secs) + float(message.header.stamp.nsecs / 1e9)
+                dts.append(float(message.header.stamp.secs) + float(message.header.stamp.nsecs / 1e9))
             else:
                 # Fall back to rosbag timestamp
-                dts = timestamp.to_sec()
+                dts.append(timestamp.to_sec())
 
             #values.append(eval('message.' + field))
             for field in fields:              
@@ -489,9 +489,12 @@ class bag_collection():
             #bag_dfs.append(bag_df)
             
             #df = pd.DataFrame({'timestamp': timestamp, 'value': values})
-
-        df = pd.concat(bag_dfs, axis=0)
-        df.sort_index(inplace=True)
+        if len(bag_dfs) != 0:
+            df = pd.concat(bag_dfs, axis=0)
+            df.sort_index(inplace=True)
+        else: 
+            print("Warning, no data in time interval.")
+            df = None
         return df
 
     def get_message_definition(self,path=None, topic=None):
@@ -545,7 +548,7 @@ class bag_collection():
             return datetime.datetime.fromtimestamp(start_time).isoformat()
         return start_time
     
-    def get_end_time(self, humna=False):
+    def get_end_time(self,human=False):
         '''Get the latest end time in the collection.'''
         end_times = [bf.get('end_time', float('-inf')) for bf in self.bagfiles]
         end_time = max(end_times) if end_times else None
@@ -553,14 +556,29 @@ class bag_collection():
             return datetime.datetime.fromtimestamp(end_time).isoformat()
         return end_time
     
-    def get_field_by_interval(self, topic=None, field=None, interval_min=60):
-        '''Get field data sampled at a regular interval in minutes over the collection.'''
+    def get_field_by_interval(self, topic=None, fields=None, interval_min=60,
+                              output_dir = './', output_format = 'pickle'):
+        '''Get field data sampled at a regular interval in minutes over the collection writing these to files'''
 
         intervals = np.arange(self.get_start_time(), self.get_end_time(), interval_min*60)
         intervals = intervals.tolist()
         intervals = intervals + [self.get_end_time()] if intervals[-1] < self.get_end_time() else intervals
-        for interval in intervals:
-            df = self.get_field(topic=topic, field=field, start_time=interval, end_time=interval+interval)
-            df.to_pickle(f"{topic.replace('/','_')}_{field}_{interval:.2f}.pkl")
 
-        return df
+        for interval_start in intervals:
+            print("Extracting data from %f to %f" % (interval_start, interval_start + interval_min * 60))
+            df = self.get_fields(topic=topic, fields=fields, start_time=interval_start, 
+                                 end_time=interval_start+interval_min * 60)
+            if df is None:
+                continue
+
+            if output_format == 'pickle':
+                filename = f"{topic.replace('/','_')}_{datetime.datetime.fromtimestamp(interval_start).isoformat():s}.pkl"
+                filename = filename[1:] # Removes leading _ from leading /
+                df.to_pickle(os.path.join( output_dir, filename))
+            if output_format == 'hdf':
+                filename = f"{topic.replace('/','_')}_{datetime.datetime.fromtimestamp(interval_start).isoformat():s}.hdf5"
+                filename = filename[1:] # Removes leading _ from leading /
+                df.to_hdf(os.path.join( output_dir, filename),key='df',format = 'table')
+            
+
+        return 
