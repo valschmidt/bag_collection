@@ -13,7 +13,7 @@ A Python module for managing and extracting data from collections of ROS bag fil
 
 This module requires Python 3 and the following dependencies:
 - `rosbag` (ROS Python API)
-- `numpy`
+    - `numpy`
 
 Install dependencies with apt on Linux
 ```bash
