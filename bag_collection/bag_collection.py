@@ -93,7 +93,7 @@ class bag_collection():
             print("Set the directory parameter to the bag_collection constructor to create a new index.")
             return             
 
-    def _process_bag_info(baginfo):
+    def _process_bag_info(self, baginfo):
         """
         Worker function for multiprocessing: open a bag file and extract metadata.
         Returns a tuple (path, result_dict) where result_dict contains keys:
